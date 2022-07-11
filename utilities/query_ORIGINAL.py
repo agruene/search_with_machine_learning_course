@@ -11,9 +11,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
-import fasttext
-import re
-import pprint as pp
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -51,9 +49,7 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None,
-                 use_synonyms=False, category=None):
-    name_field = "name" if not use_synonyms else "name.synonyms"
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None):
     query_obj = {
         'size': size,
         "sort": [
@@ -69,7 +65,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                         "should": [  #
                             {
                                 "match": {
-                                    name_field: {
+                                    "name": {
                                         "query": user_query,
                                         "fuzziness": "1",
                                         "prefix_length": 2,
@@ -93,9 +89,9 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "type": "phrase",
                                     "slop": "6",
                                     "minimum_should_match": "2<75%",
-                                    "fields": [name_field + "^10", "name.hyphens^10", "shortDescription^5",
+                                    "fields": ["name^10", "name.hyphens^10", "shortDescription^5",
                                                "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
-                                               "categoryPath", "name_synonyms"]
+                                               "categoryPath"]
                                 }
                             },
                             {
@@ -189,34 +185,12 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
         query_obj["_source"] = source
     return query_obj
 
-def normalize_query(query: str) -> str:
-    normalized_query = query.lower()
-    normalized_query = re.sub("[^a-z0-9]" , " ", normalized_query)
-    normalized_query = re.sub("\s+" , " ", normalized_query)
-    return normalized_query
 
-def categorize_query(user_query: str):
-    categorization_model = fasttext.load_model("/workspace/models/query_classifier_minq10000.bin")
-    normalized_query = normalize_query(query=user_query)
-    results = categorization_model.predict(normalized_query)
-#    pp.pprint(results)
-    category_label = ""
-    category = None
-    category_for_logging = ""
-    probability = 0.0
-    if len(results)>0:
-        category_label = results[0][0]
-        probability = results[1][0]
-        category = category_label[len("__label__"):-1]
-    print("user query: '{}' -> normalized query: '{}' -> predicted category: '{}', probability: {}". format(
-        user_query, normalized_query, category, probability
-    ))
-    return category
-
-def search(client, user_query, index="bbuy_products", sort=None, sortDir="desc", use_synonyms=False):
-    category = categorize_query(user_query)
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir,
-                             source=["name", "shortDescription"], use_synonyms=use_synonyms, category=category)
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
+    #### W3: classify the query
+    #### W3: create filters and boosts
+    # Note: you may also want to modify the `create_query` method above
+    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -238,8 +212,6 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
-    general.add_argument("--synonyms", action="store_true",
-                         help='this option enables using synonyms for the product name in the search query')
 
     args = parser.parse_args()
 
@@ -271,8 +243,10 @@ if __name__ == "__main__":
     print(query_prompt)
     for line in fileinput.input():
         query = line.rstrip()
-        if query.lower() == "exit":
+        if query == "Exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, use_synonyms=args.synonyms)
+        search(client=opensearch, user_query=query, index=index_name)
 
         print(query_prompt)
+
+    
