@@ -72,7 +72,7 @@ df.reset_index(drop=True, inplace=True)
 
 # --- normalization of queries ---
 # IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
-print("Normalize queries:)
+print("Normalize queries:")
 normalized_df = df
 if do_normalize:
     normalized_ls_of_dict = []
@@ -162,7 +162,7 @@ while True: # outer loop: continue as long as there are leaf categories removed 
 
 #check_category(category_to_check, current_parents_dict, current_category_count_dict)
 #pp.pprint(current_category_count_dict)
-print("roll up is completed. {} categories were rolled up into {} categories.".format(
+print("Roll up is completed. {} categories were rolled up into {} categories.".format(
     len(category_count_dict.keys()), len(current_category_count_dict.keys()))
 )
 
