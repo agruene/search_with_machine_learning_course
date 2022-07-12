@@ -217,6 +217,8 @@ def categorize_query(user_query: str, min_categories_probability: float = DEFAUL
     summed_probabilities = 0.0
     if not use_multiple_categories:  # just one category in output desired
         categories, probabilities = categorization_model.predict(normalized_query)
+#        print("all categories: {}".format(categories))
+#        print("all probabilities: {}".format(probabilities))
         if (categories is not None) and (len(categories)>0):
             category_label = categories[0]
             category = category_label[len("__label__"):]
