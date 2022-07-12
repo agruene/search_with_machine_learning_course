@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # A simple client for querying driven by user input on the command line.  Has hooks for the various
 # weeks (e.g. query understanding).  See the main section at the bottom of the file
 from opensearchpy import OpenSearch
@@ -14,6 +15,9 @@ import logging
 import fasttext
 import re
 import pprint as pp
+
+DEFAULT_MIN_CATEGORIES_PROBABILITY = 0.5
+DEFAULT_USE_MULTIPLE_CATEGORIES = True
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -51,9 +55,19 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None,
-                 use_synonyms=False, category=None):
-    name_field = "name" if not use_synonyms else "name.synonyms"
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, categories=None):
+    query_filters = filters
+    if categories:
+        category_filter = {
+            "terms": {
+                "categoryPathIds.keyword" :categories
+            }
+        }
+        if query_filters:
+            query_filters.append(category_filter)
+        else:
+            query_filters = [category_filter]
+    
     query_obj = {
         'size': size,
         "sort": [
@@ -66,10 +80,10 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                         "must": [
 
                         ],
-                        "should": [  #
+                        "should": [ 
                             {
                                 "match": {
-                                    name_field: {
+                                    "name": {
                                         "query": user_query,
                                         "fuzziness": "1",
                                         "prefix_length": 2,
@@ -93,9 +107,9 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                                     "type": "phrase",
                                     "slop": "6",
                                     "minimum_should_match": "2<75%",
-                                    "fields": [name_field + "^10", "name.hyphens^10", "shortDescription^5",
-                                               "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
-                                               "categoryPath", "name_synonyms"]
+                                    "fields": ["name^10", "name.hyphens^10", "shortDescription^5",
+                                                "longDescription^5", "department^0.5", "sku", "manufacturer", "features",
+                                                "categoryPath"]
                                 }
                             },
                             {
@@ -116,7 +130,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                             }
                         ],
                         "minimum_should_match": 1,
-                        "filter": filters  #
+                        "filter": query_filters  #
                     }
                 },
                 "boost_mode": "multiply",  # how _score and functions are combined
@@ -195,28 +209,51 @@ def normalize_query(query: str) -> str:
     normalized_query = re.sub("\s+" , " ", normalized_query)
     return normalized_query
 
-def categorize_query(user_query: str):
+def categorize_query(user_query: str, min_categories_probability: float = DEFAULT_MIN_CATEGORIES_PROBABILITY, use_multiple_categories: bool = DEFAULT_USE_MULTIPLE_CATEGORIES):
     categorization_model = fasttext.load_model("/workspace/models/query_classifier_minq10000.bin")
     normalized_query = normalize_query(query=user_query)
-    results = categorization_model.predict(normalized_query)
-#    pp.pprint(results)
-    category_label = ""
-    category = None
-    category_for_logging = ""
-    probability = 0.0
-    if len(results)>0:
-        category_label = results[0][0]
-        probability = results[1][0]
-        category = category_label[len("__label__"):-1]
-    print("user query: '{}' -> normalized query: '{}' -> predicted category: '{}', probability: {}". format(
-        user_query, normalized_query, category, probability
-    ))
-    return category
+    result = [] # list of categories
+    summed_probabilities = 0.0
+    if not use_multiple_categories:  # just one category in output desired
+        categories, probabilities = categorization_model.predict(normalized_query)
+        if (categories is not None) and (len(categories)>0):
+            category_label = categories[0]
+            category = category_label[len("__label__"):-1]
+            probability = probabilities[0]
+            if probability > min_categories_probability:
+                result = [category]
+                summed_probabilities += probability
+    else:  # try using more than 1 category for output
+        predictions = categorization_model.predict(normalized_query, k=10)
+        pp.pprint(predictions)
+        categories = []
+        probabilities = []
+        if (predictions is not None) and (len(predictions) > 0):
+            categories = predictions[0]
+            probabilities = predictions[1]
 
-def search(client, user_query, index="bbuy_products", sort=None, sortDir="desc", use_synonyms=False):
-    category = categorize_query(user_query)
+        summed_probabilities = 0.0
+        result = []
+        for i in range(0, len(categories)):
+            category_label = categories[i]
+            probability = probabilities[i]
+            category = category_label[len("__label__"):-1]
+            result.append(category)
+            summed_probabilities += probability
+            if summed_probabilities > min_categories_probability:
+                exit
+    print("user query: '{}' -> normalized query: '{}' -> predicted categories: {}, (summed) probability: {}". format(
+        user_query, normalized_query, result, summed_probabilities
+    ))
+    return result
+
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", 
+    min_categories_probability=DEFAULT_MIN_CATEGORIES_PROBABILITY, use_multiple_categories=DEFAULT_USE_MULTIPLE_CATEGORIES):
+    categories = categorize_query(user_query=user_query, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
     query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir,
-                             source=["name", "shortDescription"], use_synonyms=use_synonyms, category=category)
+                             source=["name", "shortDescription"], categories=categories)
+#    print(query_obj)
+#    exit(0)
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -238,9 +275,10 @@ if __name__ == "__main__":
                          help='The OpenSearch port')
     general.add_argument('--user',
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
-    general.add_argument("--synonyms", action="store_true",
-                         help='this option enables using synonyms for the product name in the search query')
-
+    general.add_argument("-c", "--min_categories_probability", type=float, default=0.5,
+                         help="The minimum prediction probability that all used query categories summed together must reach.")
+    general.add_argument("--use_multiple_categories", default=DEFAULT_USE_MULTIPLE_CATEGORIES, action="store_true")
+    
     args = parser.parse_args()
 
     if len(vars(args)) == 0:
@@ -252,7 +290,8 @@ if __name__ == "__main__":
     if args.user:
         password = getpass()
         auth = (args.user, password)
-
+    min_categories_probability = args.min_categories_probability
+    use_multiple_categories = args.use_multiple_categories
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
         hosts=[{'host': host, 'port': port}],
@@ -264,7 +303,6 @@ if __name__ == "__main__":
         verify_certs=False,  # set to true if you have certs
         ssl_assert_hostname=False,
         ssl_show_warn=False,
-
     )
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
@@ -273,6 +311,5 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query.lower() == "exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, use_synonyms=args.synonyms)
-
+        search(client=opensearch, user_query=query, index=index_name, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
         print(query_prompt)
