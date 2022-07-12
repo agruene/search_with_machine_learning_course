@@ -248,5 +248,3 @@ if __name__ == "__main__":
         search(client=opensearch, user_query=query, index=index_name)
 
         print(query_prompt)
-
-    
