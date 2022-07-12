@@ -15,9 +15,11 @@ import logging
 import fasttext
 import re
 import pprint as pp
+import sys 
+import copy
 
 DEFAULT_MIN_CATEGORIES_PROBABILITY = 0.5
-DEFAULT_USE_MULTIPLE_CATEGORIES = True
+DEFAULT_USE_MULTIPLE_CATEGORIES = False
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -69,7 +71,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             query_filters = [category_filter]
     
     query_obj = {
-        'size': size,
+        "size": size,
         "sort": [
             {sort: {"order": sortDir}}
         ],
@@ -181,7 +183,6 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
                         }
                     }
                 ]
-
             }
         }
     }
@@ -218,7 +219,7 @@ def categorize_query(user_query: str, min_categories_probability: float = DEFAUL
         categories, probabilities = categorization_model.predict(normalized_query)
         if (categories is not None) and (len(categories)>0):
             category_label = categories[0]
-            category = category_label[len("__label__"):-1]
+            category = category_label[len("__label__"):]
             probability = probabilities[0]
             if probability > min_categories_probability:
                 result = [category]
@@ -231,19 +232,18 @@ def categorize_query(user_query: str, min_categories_probability: float = DEFAUL
         if (predictions is not None) and (len(predictions) > 0):
             categories = predictions[0]
             probabilities = predictions[1]
-
         summed_probabilities = 0.0
         result = []
         for i in range(0, len(categories)):
             category_label = categories[i]
             probability = probabilities[i]
-            category = category_label[len("__label__"):-1]
+            category = category_label[len("__label__"):]
             result.append(category)
             summed_probabilities += probability
             if summed_probabilities > min_categories_probability:
-                exit
-    print("user query: '{}' -> normalized query: '{}' -> predicted categories: {}, (summed) probability: {}". format(
-        user_query, normalized_query, result, summed_probabilities
+                break
+    print("user query: '{}' -> normalized query: '{}' -> predicted categories: {}, (summed) probability: {}, min_probability: {}". format(
+        user_query, normalized_query, result, summed_probabilities, min_categories_probability
     ))
     return result
 
@@ -251,14 +251,27 @@ def search(client, user_query, index="bbuy_products", sort="_score", sortDir="de
     min_categories_probability=DEFAULT_MIN_CATEGORIES_PROBABILITY, use_multiple_categories=DEFAULT_USE_MULTIPLE_CATEGORIES):
     categories = categorize_query(user_query=user_query, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
     query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir,
-                             source=["name", "shortDescription"], categories=categories)
-#    print(query_obj)
-#    exit(0)
+                             source=["name", "shortDescription", "categoryPathIds"], categories=categories)
     logging.info(query_obj)
+    count_obj = {}
+    count_obj["query"] = query_obj["query"]
+    count_response = client.count(count_obj, index=index)
+#    pp.pprint(count_response) # debugging
+#    exit(0)
+    total_count = int(count_response["count"])
+    print("total results: {}".format(total_count))
     response = client.search(query_obj, index=index)
+#    pp.pprint(response) # debugging
+#    exit(0)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
+        # - nicer output of results including categories -
         hits = response['hits']['hits']
-        print(json.dumps(response, indent=2))
+        print("showing: {} results".format(len(hits)))
+        i=0
+        for hit in hits:
+            i += 1
+            print("{}. id: {}, name: '{}', categories: {}".format(i, hit["_id"], hit["_source"]["name"][0], hit["_source"]["categoryPathIds"])) 
+ #       print(json.dumps(response, indent=2))
 
 
 if __name__ == "__main__":
@@ -267,19 +280,20 @@ if __name__ == "__main__":
     auth = ('admin', 'admin')  # For testing only. Don't store credentials in code.
     parser = argparse.ArgumentParser(description='Build LTR.')
     general = parser.add_argument_group("general")
-    general.add_argument("-i", '--index', default="bbuy_products",
-                         help='The name of the main index to search')
-    general.add_argument("-s", '--host', default="localhost",
-                         help='The OpenSearch host name')
-    general.add_argument("-p", '--port', type=int, default=9200,
-                         help='The OpenSearch port')
-    general.add_argument('--user',
-                         help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
-    general.add_argument("-c", "--min_categories_probability", type=float, default=0.5,
-                         help="The minimum prediction probability that all used query categories summed together must reach.")
-    general.add_argument("--use_multiple_categories", default=DEFAULT_USE_MULTIPLE_CATEGORIES, action="store_true")
+    general.add_argument("-i", "--index", default="bbuy_products",
+                         help="The name of the main index to search")
+    general.add_argument("-s", "--host", default="localhost",
+                         help="The OpenSearch host name")
+    general.add_argument("-p", "--port", type=int, default=9200,
+                         help="The OpenSearch port")
+    general.add_argument("--user",
+                         help="The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin")
+    general.add_argument("--min_categories_probability", type=float, default=1.0,
+                         help="The minimum prediction probability that all used query categories summed together must reach. If not provided, categories are not used.")
+    general.add_argument("--use_multiple_categories", default=False, action="store_true")
     
     args = parser.parse_args()
+    args, unknownargs = parser.parse_known_args()
 
     if len(vars(args)) == 0:
         parser.print_usage()
@@ -307,7 +321,8 @@ if __name__ == "__main__":
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
     print(query_prompt)
-    for line in fileinput.input():
+    for line in sys.stdin:
+ #   for line in fileinput.input():
         query = line.rstrip()
         if query.lower() == "exit":
             break
