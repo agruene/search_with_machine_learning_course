@@ -2,6 +2,7 @@
 import opensearchpy
 import requests
 from lxml import etree
+
 import os
 import click
 import glob
@@ -12,18 +13,14 @@ import fasttext
 from pathlib import Path
 import requests
 import json
-from time import perf_counter
-from typing import List
-import pprint as pp
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
 
 # IMPLEMENT ME: import the sentence transformers module!
-from sentence_transformers import SentenceTransformer
 
 # NOTE: this is not a complete list of fields.  If you wish to add more, put in the appropriate XPath expression.
 #TODO: is there a way to do this using XPath/XSL Functions so that we don't have to maintain a big list?
@@ -106,21 +103,12 @@ def get_opensearch():
     )
     return client
 
-def index_documents(client, model, docs: List[dict], names: List[str]):
-    logger.info("Transforming names to vectors")
-    embeddings = model.encode(names)
-    for i in range(0, len(docs)):
-        assert docs[i]["_source"]["name"][0] == names[i], f"vector embedded name {i} '{names[i]}' is not the one frome the doc: '{docs[i]['name']}'"
-        docs[i]["_source"]["embedding"] = embeddings[i]
-    logger.info(f"{len(names)} names were transfomed to vectors.")
-
-    logger.info("Indexing")
-    bulk(client, docs, request_timeout=60)
-    logger.info(f"{len(docs)} documents with vectors were indexed.")
 
 def index_file(file, index_name, reduced=False):
+    logger.info("Creating Model")
     # IMPLEMENT ME: instantiate the sentence transformer model!
-    model = SentenceTransformer(MODEL_NAME)
+    
+    logger.info("Ready to index")
 
     docs_indexed = 0
     client = get_opensearch()
@@ -150,16 +138,16 @@ def index_file(file, index_name, reduced=False):
             continue
         docs.append({'_index': index_name, '_id':doc['sku'][0], '_source' : doc})
         #docs.append({'_index': index_name, '_source': doc})
-        names.append(doc["name"][0])
         docs_indexed += 1
         if docs_indexed % 200 == 0:
-            index_documents(client=client, model=model, docs=docs, names=names)
-            logger.info(f'Total: Now a total of {docs_indexed} documents are indexed for the current file.')
+            logger.info("Indexing")
+            bulk(client, docs, request_timeout=60)
+            logger.info(f'{docs_indexed} documents indexed')
             docs = []
             names = []
     if len(docs) > 0:
-        index_documents(client=client, model=model, docs=docs, names=names)
-        logger.info(f"Total: A total of {docs_indexed} documents was indexed for file '{file}'.")
+        bulk(client, docs, request_timeout=60)
+        logger.info(f'{docs_indexed} documents indexed')
     return docs_indexed
 
 @click.command()

@@ -17,6 +17,9 @@ import re
 import pprint as pp
 import sys 
 import copy
+from sentence_transformers import SentenceTransformer
+
+MODEL_NAME = "all-MiniLM-L6-v2"
 
 DEFAULT_MIN_CATEGORIES_PROBABILITY = 0.5
 DEFAULT_USE_MULTIPLE_CATEGORIES = False
@@ -24,6 +27,23 @@ DEFAULT_USE_MULTIPLE_CATEGORIES = False
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+def create_vector_query(query: str, number_of_results: int = 10):
+    model = SentenceTransformer(MODEL_NAME)
+    embeddings = model.encode([query])
+    embedding = embeddings[0]
+    query_obj = {
+        "size": number_of_results,
+        "query": {
+            "knn": {
+                "embedding": {
+                    "vector": embedding,
+                    "k": number_of_results
+                }
+            }
+        }
+    }
+    return query_obj
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -250,9 +270,14 @@ def categorize_query(user_query: str, min_categories_probability: float = DEFAUL
     return result
 
 def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", 
-    min_categories_probability=DEFAULT_MIN_CATEGORIES_PROBABILITY, use_multiple_categories=DEFAULT_USE_MULTIPLE_CATEGORIES):
-    categories = categorize_query(user_query=user_query, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir,
+    min_categories_probability=DEFAULT_MIN_CATEGORIES_PROBABILITY, 
+    use_multiple_categories=DEFAULT_USE_MULTIPLE_CATEGORIES,
+    use_vector=False):
+    if use_vector:
+        query_obj = create_vector_query(query=user_query)
+    else:
+        categories = categorize_query(user_query=user_query, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
+        query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir,
                              source=["name", "shortDescription", "categoryPathIds"], categories=categories)
     logging.info(query_obj)
     count_obj = {}
@@ -272,7 +297,12 @@ def search(client, user_query, index="bbuy_products", sort="_score", sortDir="de
         i=0
         for hit in hits:
             i += 1
-            print("{}. id: {}, name: '{}', categories: {}".format(i, hit["_id"], hit["_source"]["name"][0], hit["_source"]["categoryPathIds"])) 
+            current_hit_output_string = "{}. id: {}, name: '{}'".format(i, hit["_id"], hit["_source"]["name"][0])
+            if use_vector:  # show score for vector use case (week 4)
+                current_hit_output_string += ", score: {}".format(hit["_score"])
+            else:  # show categories for category filtering use case (week 3)
+                current_hit_output_string += ", categories: {}".format(hit["_source"]["categoryPathIds"])
+            print(current_hit_output_string)
  #       print(json.dumps(response, indent=2))
 
 
@@ -293,6 +323,7 @@ if __name__ == "__main__":
     general.add_argument("--min_categories_probability", type=float, default=1.0,
                          help="The minimum prediction probability that all used query categories summed together must reach. If not provided, categories are not used.")
     general.add_argument("--use_multiple_categories", default=False, action="store_true")
+    general.add_argument("--vector", default=False, action="store_true")
     
     args = parser.parse_args()
     args, unknownargs = parser.parse_known_args()
@@ -308,6 +339,7 @@ if __name__ == "__main__":
         auth = (args.user, password)
     min_categories_probability = args.min_categories_probability
     use_multiple_categories = args.use_multiple_categories
+    use_vector = args.vector
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
         hosts=[{'host': host, 'port': port}],
@@ -328,5 +360,5 @@ if __name__ == "__main__":
         query = line.rstrip()
         if query.lower() == "exit":
             break
-        search(client=opensearch, user_query=query, index=index_name, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories)
+        search(client=opensearch, user_query=query, index=index_name, min_categories_probability=min_categories_probability, use_multiple_categories=use_multiple_categories, use_vector=use_vector)
         print(query_prompt)
